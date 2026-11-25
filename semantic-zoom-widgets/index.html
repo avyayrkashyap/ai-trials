@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Semantic Zoom Widgets</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f4f3ef; --card:#fff; --ink:#1d1d1f; --mute:#77756f; --line:#e3e1da; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141413; --card:#1f1f1d; --ink:#ecebe6; --mute:#9a988f; --line:#2e2d2a; } }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; overflow:hidden; background:var(--bg); color:var(--ink);
+    font: 14px/1.35 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  /* Dot grid; JS sets --cell and aligns the origin (--gx/--gy) to the card's top-left so cells line up with it. */
+  #stage { position:fixed; inset:0; touch-action:none;
+    background:radial-gradient(circle, var(--line) 1.5px, transparent 2px) var(--gx) var(--gy) / var(--cell) var(--cell);
+    transition:background-position .25s ease; }
+  #stage.drag, #stage.drag * { cursor:nwse-resize; user-select:none; }
+  #hud { position:fixed; left:16px; bottom:16px; color:var(--mute); font-size:12px; pointer-events:none; }
+  #tabs { position:fixed; top:16px; left:50%; translate:-50% 0; z-index:1; display:flex; gap:4px; padding:4px;
+    background:var(--card); border:1px solid var(--line); border-radius:999px; box-shadow:0 1px 2px #0001; }
+  #tabs button { font:inherit; font-size:13px; color:var(--mute); background:none; border:0; border-radius:999px;
+    padding:6px 14px; cursor:pointer; }
+  #tabs button[aria-selected="true"] { background:var(--accent); color:#fff; }
+
+  /* Widgets are positioned in screen pixels, not CSS-scaled, so text stays crisp.
+     Which detail level shows is decided purely by the box's rendered size via container queries. */
+  .w { position:absolute; container-type:size; background:var(--card); border:1px solid var(--line);
+    border-radius:14px; overflow:hidden; box-shadow:0 1px 2px #0001; transition:all .25s ease; }
+  /* iPad-style corner grip: an arc hugging the bottom-right radius. */
+  .grip { position:absolute; right:0; bottom:0; width:28px; height:28px; cursor:nwse-resize; z-index:1; }
+  .grip::after { content:''; position:absolute; right:5px; bottom:5px; width:14px; height:14px;
+    border:solid var(--mute); border-width:0 3.5px 3.5px 0; border-bottom-right-radius:10px; opacity:.55; }
+  .grip:hover::after, .drag .grip::after { opacity:1; }
+  .w > div { display:none; padding:12px; height:100%; }
+  .w .l0 { display:grid; place-items:center; padding:0; font-size:min(60cqw,60cqh); background:var(--accent); color:#fff; }
+  @container (min-width:110px) { .w .l0 { display:none } .w .l1 { display:flex } }
+  @container (min-width:220px) { .w .l1 { display:none } .w .l2 { display:block } }
+  @container (min-width:400px) { .w .l2 { display:none } .w .l3 { display:block; overflow:auto } }
+
+  .l1 { flex-direction:column; justify-content:space-between; border-top:4px solid var(--accent); }
+  .l1 .t { font-size:12px; color:var(--mute); }
+  .l1 .k { font-size:clamp(16px, 18cqw, 34px); font-weight:650; }
+  .l2, .l3 { border-top:4px solid var(--accent); }
+  h3 { margin:0 0 6px; font-size:15px; }
+  .big { font-size:28px; font-weight:650; margin:4px 0; }
+  .mute { color:var(--mute); font-size:12px; }
+  ul { margin:6px 0 0; padding-left:18px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:6px; }
+  td { padding:4px 0; border-bottom:1px solid var(--line); }
+  td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  .bars { display:flex; align-items:flex-end; gap:4px; height:70px; margin-top:8px; }
+  .bars span { flex:1; background:var(--accent); border-radius:3px 3px 0 0; opacity:.85; }
+</style>
+</head>
+<body>
+<nav id="tabs" role="tablist"></nav>
+<div id="stage"></div>
+<div id="hud"></div>
+
+<script>
+// One widget per tab. Edit/add entries here; each needs 4 levels of markup.
+const W = [
+  { cw:6, ch:4, accent:'#3b82f6', icon:'☀', title:'Weather', key:'18°',
+    l2:`<h3>Weather · Lisbon</h3><div class="big">18° Sunny</div><div class="mute">H 21° · L 12° · Wind 9 km/h</div>`,
+    l3:`<h3>Weather · Lisbon</h3><div class="big">18° Sunny</div>
+        <table><tr><td>Tue</td><td>☀ 21° / 12°</td></tr><tr><td>Wed</td><td>⛅ 19° / 13°</td></tr>
+        <tr><td>Thu</td><td>🌧 16° / 11°</td></tr><tr><td>Fri</td><td>☀ 20° / 12°</td></tr></table>` },
+  { cw:6, ch:4, accent:'#10b981', icon:'✓', title:'Tasks', key:'3 / 7',
+    l2:`<h3>Tasks</h3><div class="big">3 of 7 done</div><div class="mute">Next: Review PR</div>`,
+    l3:`<h3>Tasks</h3><ul><li><s>Write spec</s></li><li><s>Book flights</s></li><li><s>Email Sam</s></li>
+        <li>Review PR</li><li>Fix login bug</li><li>Plan sprint</li><li>Update deps</li></ul>` },
+  { cw:6, ch:4, accent:'#f59e0b', icon:'$', title:'Portfolio', key:'+1.8%',
+    l2:`<h3>Portfolio</h3><div class="big">+1.8% today</div><div class="mute">Best: ACME +4.2%</div>`,
+    l3:`<h3>Portfolio</h3><table><tr><td>ACME</td><td>+4.2%</td></tr><tr><td>GLOBX</td><td>+1.1%</td></tr>
+        <tr><td>INITECH</td><td>−0.6%</td></tr><tr><td>UMBRL</td><td>+2.0%</td></tr></table>` },
+  { cw:6, ch:4, accent:'#8b5cf6', icon:'♪', title:'Music', key:'Playing',
+    l2:`<h3>Now playing</h3><div class="big" style="font-size:20px">Night Drive</div><div class="mute">The Synths · 2:14 / 4:02</div>`,
+    l3:`<h3>Up next</h3><table><tr><td>Night Drive</td><td>4:02</td></tr><tr><td>Neon Rain</td><td>3:31</td></tr>
+        <tr><td>Overpass</td><td>5:10</td></tr><tr><td>Static Bloom</td><td>3:48</td></tr></table>` },
+  { cw:6, ch:4, accent:'#ef4444', icon:'♥', title:'Health', key:'8.2k',
+    l2:`<h3>Steps</h3><div class="big">8,204</div><div class="mute">82% of 10k goal</div>`,
+    l3:`<h3>Steps · this week</h3><div class="bars">${[60,80,45,90,70,82,30].map(v=>`<span style="height:${v}%"></span>`).join('')}</div>
+        <div class="mute" style="margin-top:6px">Mon → Sun · avg 6.5k</div>` },
+  { cw:6, ch:4, accent:'#0ea5e9', icon:'▦', title:'Calendar', key:'2 mtgs',
+    l2:`<h3>Today</h3><div class="big">2 meetings</div><div class="mute">Next: Design sync at 14:00</div>`,
+    l3:`<h3>Today</h3><table><tr><td>Standup</td><td>09:30</td></tr><tr><td>Design sync</td><td>14:00</td></tr>
+        <tr><td>Focus block</td><td>15:00–17:00</td></tr></table>` },
+];
+
+const CELL = 50; // grid size in px; card sizes are whole cells
+const stage = document.getElementById('stage'), hud = document.getElementById('hud'), tabs = document.getElementById('tabs');
+stage.style.setProperty('--cell', CELL + 'px');
+let a = 0, x = 0, y = 0, drag = null; // a = active tab; x/y = card top-left
+
+const maxCells = () => [Math.floor((innerWidth - 32) / CELL), Math.floor((innerHeight - 120) / CELL)];
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+function resize(d, cw, ch) {
+  const [mw, mh] = maxCells();
+  d.cw = clamp(cw, 1, mw); d.ch = clamp(ch, 1, mh);
+  render();
+}
+
+const els = W.map((d, i) => {
+  const el = document.createElement('div');
+  el.className = 'w';
+  el.style.setProperty('--accent', d.accent);
+  el.innerHTML = `<div class="l0">${d.icon}</div>
+    <div class="l1"><span class="t">${d.title}</span><span class="k">${d.key}</span></div>
+    <div class="l2">${d.l2}</div><div class="l3">${d.l3}</div>
+    <span class="grip" tabindex="0" role="button" aria-label="Resize ${d.title} (arrow keys)"></span>`;
+  stage.append(el);
+
+  // Corner grip: card stays anchored top-left while dragging, size snaps to whole cells, re-centres on release.
+  const g = el.querySelector('.grip');
+  g.onpointerdown = e => { drag = { px:e.clientX, py:e.clientY, cw:d.cw, ch:d.ch }; g.setPointerCapture(e.pointerId); stage.classList.add('drag'); };
+  g.onpointermove = e => { if (drag) resize(d, Math.round(drag.cw + (e.clientX - drag.px) / CELL), Math.round(drag.ch + (e.clientY - drag.py) / CELL)); };
+  g.onpointerup = g.onpointercancel = () => { drag = null; stage.classList.remove('drag'); render(); };
+  g.onkeydown = e => {
+    const k = { ArrowRight:[1,0], ArrowLeft:[-1,0], ArrowDown:[0,1], ArrowUp:[0,-1] }[e.key];
+    if (k) { e.preventDefault(); resize(d, d.cw + k[0], d.ch + k[1]); }
+  };
+
+  const b = document.createElement('button');
+  b.role = 'tab';
+  b.textContent = d.title;
+  b.style.setProperty('--accent', d.accent);
+  b.onclick = () => { a = i; render(); };
+  tabs.append(b);
+  return el;
+});
+
+function render() {
+  const d = W[a], w = d.cw * CELL, h = d.ch * CELL;
+  els.forEach((el, i) => el.hidden = i !== a);
+  [...tabs.children].forEach((b, i) => b.ariaSelected = i === a);
+  if (!drag) { x = Math.round((innerWidth - w) / 2); y = Math.round((innerHeight - h) / 2); }
+  Object.assign(els[a].style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+  stage.style.setProperty('--gx', x - CELL / 2 + 'px'); // dots sit on cell corners
+  stage.style.setProperty('--gy', y - CELL / 2 + 'px');
+  hud.textContent = `${d.cw} × ${d.ch} · drag the corner to resize`;
+}
+
+addEventListener('resize', () => resize(W[a], W[a].cw, W[a].ch));
+render();
+</script>
+</body>
+</html>
